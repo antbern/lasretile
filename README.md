@@ -6,7 +6,7 @@
 ## Features
 
 - Supports both LAS and LAZ formats
-- Fast parallel reading and writing
+- Fast parallel readingk
 - Automatically detects and prevents overlapping input files
 - Progress bar for large datasets
 - Simple command-line interface
@@ -47,7 +47,7 @@ Each output tile is written as a compressed LAZ file (using the same format as t
 tile_<x>_<y>.laz
 ```
 
-where `<x>` and `<y>` are the integer tile indices in the X and Y directions, respectively. Each file contains all points from the input files that fall within the corresponding tile bounds. The LAS/LAZ header is updated to reflect the new bounds and point count for each tile.
+where `<x>` and `<y>` are the integer tile indices in the X and Y directions, respectively. Each file contains all points from the input files that fall within the corresponding tile bounds. The LAS/LAZ header is updated to reflect the new bounds and point count for each tile. Feel free to [open an Issue](https://github.com/antbern/lasretile/issues/new) if you need other output formats.
 
 ## How it works
 
@@ -64,7 +64,11 @@ where `<x>` and `<y>` are the integer tile indices in the X and Y directions, re
 
 ## License
 
+
 MIT
 
----
-For more details, see the source code in `src/main.rs`.
+## FAQ / Common Errors
+
+### Why do I get an error about overlapping input files?
+
+For now, `lasretile` requires that all input LAS/LAZ files have non-overlapping spatial bounds. If two or more files cover the same area, the tool will abort with an error. This is to prevent duplicate points in the output tiles and ensure that each point is assigned to exactly one tile. Overlapping files can lead to ambiguous assignment and data corruption, so always check your input dataset for overlaps before running the tool. If you have input data with overlapping bounds that you want to retile, please [open an Issue](https://github.com/antbern/lasretile/issues/new) and we can add a configuration option to allow overlapping input tiles.s
