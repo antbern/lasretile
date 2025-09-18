@@ -1,9 +1,14 @@
-use std::{collections::HashMap, fs::File, io::BufWriter, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    io::BufWriter,
+    path::Path,
+};
 
 use anyhow::{Context, Result};
 
-// compute the number of elements we can buffer for 50MB of memory usage during LAZ -> XyzRecord conversion
-const LAZ_BUFFER_SIZE: usize = 50 * 1024 * 1024 / (size_of::<las::Point>());
+// compute the number of elements we can buffer for 200MB of memory usage during LAZ/LAS reading
+const LAZ_BUFFER_SIZE: usize = 200 * 1024 * 1024 / (size_of::<las::Point>());
 
 fn main() -> Result<()> {
     // Usage: [input folder] [output folder] [tile size]
@@ -40,18 +45,10 @@ fn main() -> Result<()> {
             continue;
         }
 
-        println!("Reading header for file: {}", path.display());
+        let reader = las::Reader::from_path(&path)
+            .with_context(|| format!("open LAS/LAZ file: {}", path.display()))?;
 
-        let reader = las::Reader::from_path(&path).context("open LAS/LAZ file")?;
         let header = reader.header();
-
-        println!(
-            "File: {} has {} points: {:?}",
-            path.display(),
-            header.number_of_points(),
-            header.bounds(),
-        );
-
         headers.push((path.to_owned(), header.clone()));
     }
 
@@ -66,6 +63,14 @@ fn main() -> Result<()> {
         .map(|(_, h)| h.bounds().max)
         .reduce(|a, b| vector_max(&a, &b))
         .context("at least one input file")?;
+
+    let total_points: u64 = headers.iter().map(|(_, h)| h.number_of_points()).sum();
+
+    println!(
+        "Found {} input files with a total {}M points.",
+        headers.len(),
+        total_points / 1_000_000
+    );
 
     println!("Overall bounds: min={:?}, max={:?}", min, max);
     println!(
@@ -104,17 +109,40 @@ fn main() -> Result<()> {
 
     let options = las::ReaderOptions::default().with_laz_parallelism(las::LazParallelism::Yes);
 
-    // TODO: create the mapping from input to output beforehand. Automatically close files that
+    // Create the mapping from input to output beforehand. Automatically close files that
     // have been written completely to avoid having too many files open at once.
     // Assume the input files have points "everywhere" in their bounds.
-    let mut output_files: HashMap<(i64, i64), las::Writer<BufWriter<File>>> =
-        std::collections::HashMap::new();
-    for (path, header) in &headers {
+    let mut output_files: HashMap<(i32, i32), OutTile> = std::collections::HashMap::new();
+    for (i, (_, header)) in headers.iter().enumerate() {
+        // since each tile is rectangular, we can compute the range of tiles that this file intersects and make sure they are instantiated
+        let bounds = header.bounds();
+
+        let min_x = (bounds.min.x / tile_size) as i32;
+        let max_x = (bounds.max.x / tile_size) as i32;
+        let min_y = (bounds.min.y / tile_size) as i32;
+        let max_y = (bounds.max.y / tile_size) as i32;
+
+        for tx in min_x..=max_x {
+            for ty in min_y..=max_y {
+                let tile = output_files.entry((tx, ty)).or_insert_with(|| OutTile {
+                    tile_index: (tx, ty),
+                    input_files: HashSet::new(),
+                    writer: None,
+                });
+                tile.input_files.insert(i);
+            }
+        }
+    }
+
+    println!("Output files to create: {}", output_files.len(),);
+
+    for (i_file, (path, header)) in headers.iter().enumerate() {
         // open the file for reading
         println!("Processing file: {}", path.display());
         let mut reader = las::Reader::with_options(std::fs::File::open(path)?, options)
             .expect("Could not create reader");
 
+        // read LAZ_BUFFER_SIZE points at a time, this allows the reading to happen in parallel
         let mut points = Vec::with_capacity(LAZ_BUFFER_SIZE);
         loop {
             points.clear();
@@ -124,19 +152,16 @@ fn main() -> Result<()> {
                 break;
             }
 
-            // map each point to their "new" tile
-
             // To reduce the number of hashmap lookups: iterate the points until
             // they no longer fit into the current tile, then do a single lookup and write all
             // points at once.
-
             let mut i = 0;
             while i < n as usize {
                 let mut tile_index = None;
                 let mut count = 0;
                 for p in &points[i..] {
-                    let nx = (p.x / tile_size) as i64;
-                    let ny = (p.y / tile_size) as i64;
+                    let nx: i32 = (p.x / tile_size) as i32;
+                    let ny: i32 = (p.y / tile_size) as i32;
 
                     if let Some((tx, ty)) = tile_index {
                         if (nx, ny) != (tx, ty) {
@@ -150,17 +175,12 @@ fn main() -> Result<()> {
                 }
 
                 let (nx, ny) = tile_index.context("at least one point to process")?;
-                println!("Count: {count}");
 
-                let writer = output_files.entry((nx, ny)).or_insert_with(|| {
-                    // create the output file
-                    let tile_path = output_folder.join(format!("tile_{}_{}.laz", nx, ny));
-                    std::fs::create_dir_all(output_folder).expect("Could not create output folder");
-                    println!("Creating output file: {}", tile_path.display());
-                    let mut new_header = header.clone();
-                    new_header.clear();
-                    las::Writer::from_path(&tile_path, new_header).expect("Could not create writer")
-                });
+                let writer = output_files
+                    .get_mut(&(nx, ny))
+                    .context("tile should exist")?
+                    .get_writer(output_folder, header)
+                    .context("Could not get writer")?;
 
                 for p in &points[i..(i + count)] {
                     writer
@@ -170,12 +190,64 @@ fn main() -> Result<()> {
                 i += count;
             }
         }
-    }
-    drop(output_files); // close all output files
 
-    // Step3: Apply the plan, read the input files and write the output files (in parallel)
+        // finished reading this input file, we should remove it from any output files and close
+        // any output files that are now complete
+
+        output_files.retain(|_, tile| {
+            // remove the file we just processed from the list
+            tile.input_files.remove(&i_file);
+
+            // drop this entry if it has no more input files
+            !tile.input_files.is_empty()
+        });
+    }
+
+    // make sure all output files are closed
+    anyhow::ensure!(output_files.is_empty(), "all output files should be closed");
 
     Ok(())
+}
+
+struct OutTile {
+    /// the index of this tile
+    tile_index: (i32, i32),
+
+    /// The input files that contribute to this tile
+    input_files: HashSet<usize>,
+
+    /// The writer to this file, might be None if not opened yet
+    writer: Option<las::Writer<BufWriter<File>>>,
+}
+impl Drop for OutTile {
+    fn drop(&mut self) {
+        println!("Closing tile {},{}", self.tile_index.0, self.tile_index.1,);
+    }
+}
+
+impl OutTile {
+    pub fn get_writer(
+        &mut self,
+        output_folder: &Path,
+        header: &las::Header,
+    ) -> Result<&mut las::Writer<BufWriter<File>>> {
+        if self.writer.is_none() {
+            let tile_path = output_folder.join(format!(
+                "tile_{}_{}.laz",
+                self.tile_index.0, self.tile_index.1
+            ));
+            let mut new_header = header.clone();
+            new_header.clear();
+
+            let new_writer = las::Writer::from_path(&tile_path, new_header)
+                .context("Could not create writer")?;
+
+            let writer = self.writer.insert(new_writer);
+            return Ok(writer);
+        }
+        // we know writer is Some here
+        Ok(self.writer.as_mut().expect("unreachable"))
+    }
 }
 
 fn vector_min(a: &las::Vector<f64>, b: &las::Vector<f64>) -> las::Vector<f64> {
