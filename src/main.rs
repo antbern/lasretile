@@ -134,7 +134,10 @@ fn main() -> Result<()> {
         }
     }
 
-    println!("Output files to create: {}", output_files.len(),);
+    println!("Output files to create: {}", output_files.len());
+
+    std::fs::create_dir_all(output_folder)
+        .with_context(|| format!("create output folder: {}", output_folder.display()))?;
 
     let pb = indicatif::ProgressBar::new(total_points);
     pb.set_style(indicatif::ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{msg}] [{wide_bar:.cyan/blue}] {human_pos}/{human_len} ({percent}%) ({eta})")
