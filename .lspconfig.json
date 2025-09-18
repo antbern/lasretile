@@ -1,0 +1,7 @@
+{
+	"rust_analyzer": {
+		"check": {
+			"command": "clippy"
+		}
+	}
+}

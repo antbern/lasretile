@@ -23,7 +23,7 @@ fn main() -> Result<()> {
     let mut headers = Vec::new();
 
     // Step1: iterate over all input files and load their LAS headers to know their size
-    for file in std::fs::read_dir(&input_folder)? {
+    for file in std::fs::read_dir(input_folder)? {
         let file = file?;
 
         if !file.file_type()?.is_file() {
@@ -112,7 +112,7 @@ fn main() -> Result<()> {
     for (path, header) in &headers {
         // open the file for reading
         println!("Processing file: {}", path.display());
-        let mut reader = las::Reader::with_options(std::fs::File::open(&path)?, options)
+        let mut reader = las::Reader::with_options(std::fs::File::open(path)?, options)
             .expect("Could not create reader");
 
         let mut points = Vec::with_capacity(LAZ_BUFFER_SIZE);
@@ -159,9 +159,7 @@ fn main() -> Result<()> {
                     println!("Creating output file: {}", tile_path.display());
                     let mut new_header = header.clone();
                     new_header.clear();
-                    let writer = las::Writer::from_path(&tile_path, new_header)
-                        .expect("Could not create writer");
-                    writer
+                    las::Writer::from_path(&tile_path, new_header).expect("Could not create writer")
                 });
 
                 for p in &points[i..(i + count)] {
