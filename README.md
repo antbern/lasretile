@@ -1,0 +1,75 @@
+
+# 🟩 lasretile
+
+`lasretile` is a small Rust tool for re-tiling LAS/LAZ point cloud files into a new tile size. It efficiently splits or merges input files into rectangular tiles, making it easy to reorganize large point cloud datasets for further processing or analysis.
+
+## ✨ Features
+
+- Supports both LAS and LAZ formats
+- Fast parallel readingk
+- Automatically detects and prevents overlapping input files
+- Progress bar for large datasets
+- Simple command-line interface
+
+## ⚙️ Installation
+
+First, ensure you have Rust and Cargo installed using [rustup](https://rustup.rs/). Then,
+clone the repository and build with Cargo (target the current CPU for maximum performance):
+
+```bash
+git clone https://github.com/antbern/lasretile.git
+cd lasretile
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+## 🚀 Usage
+
+```bash
+target/release/lasretile [input folder] [output folder] [tile size]
+```
+
+- `input folder`: Directory containing LAS/LAZ files to retile
+- `output folder`: Directory where new tiles will be written
+- `tile size`: Tile size in the same units as the LAS/LAZ files (e.g., meters)
+
+Example:
+
+```bash
+target/release/lasretile ./input_las ./output_tiles 100.0
+```
+
+This will read all `.las` and `.laz` files in `./input_las`, and write new tiles of size 100x100 units to `./output_tiles`.
+
+## 🗂️ Output Tile Format
+
+Each output tile is written as a compressed LAZ file (using the same format as the input files, if possible). The tile files are named as:
+
+```
+tile_<x>_<y>.laz
+```
+
+where `<x>` and `<y>` are the integer tile indices in the X and Y directions, respectively. Each file contains all points from the input files that fall within the corresponding tile bounds. The LAS/LAZ header is updated to reflect the new bounds and point count for each tile. Feel free to [open an Issue](https://github.com/antbern/lasretile/issues/new) if you need other output formats.
+
+## 🛠️ How it works
+
+1. Scans all input files and reads their headers to determine bounds and point counts.
+2. Checks for overlapping input files and aborts if any are found.
+3. Computes the set of output tiles needed.
+4. Reads each input file in parallel, writing points to the appropriate output tile file.
+5. Closes output files as soon as all contributing input files are processed.
+
+## 📦 Requirements
+
+- Rust 1.70+ (edition 2024)
+- LAS/LAZ files (with non-overlapping bounds)
+
+## 📄 License
+
+
+MIT
+
+## ❓ FAQ / Common Errors
+
+### Why do I get an error about overlapping input files?
+
+For now, `lasretile` requires that all input LAS/LAZ files have non-overlapping spatial bounds. If two or more files cover the same area, the tool will abort with an error. This is to prevent duplicate points in the output tiles and ensure that each point is assigned to exactly one tile. Overlapping files can lead to ambiguous assignment and data corruption, so always check your input dataset for overlaps before running the tool. If you have input data with overlapping bounds that you want to retile, please [open an Issue](https://github.com/antbern/lasretile/issues/new) and we can add a configuration option to allow overlapping input tiles.s
