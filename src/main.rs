@@ -136,9 +136,16 @@ fn main() -> Result<()> {
 
     println!("Output files to create: {}", output_files.len(),);
 
+    let pb = indicatif::ProgressBar::new(total_points);
+    pb.set_style(indicatif::ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{msg}] [{wide_bar:.cyan/blue}] {human_pos}/{human_len} ({percent}%) ({eta})")
+        .unwrap()
+        .with_key("eta", |state: &indicatif::ProgressState, w: &mut dyn std::fmt::Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
+        .progress_chars("#>-"));
+    let mut processed_points = 0;
     for (i_file, (path, header)) in headers.iter().enumerate() {
+        pb.set_message(format!("{}/{}", i_file + 1, headers.len()));
+
         // open the file for reading
-        println!("Processing file: {}", path.display());
         let mut reader = las::Reader::with_options(std::fs::File::open(path)?, options)
             .expect("Could not create reader");
 
@@ -188,6 +195,8 @@ fn main() -> Result<()> {
                         .context("Could not write point")?;
                 }
                 i += count;
+                processed_points += count as u64;
+                pb.set_position(processed_points);
             }
         }
 
@@ -202,6 +211,7 @@ fn main() -> Result<()> {
             !tile.input_files.is_empty()
         });
     }
+    pb.finish_with_message("Done");
 
     // make sure all output files are closed
     anyhow::ensure!(output_files.is_empty(), "all output files should be closed");
@@ -218,11 +228,6 @@ struct OutTile {
 
     /// The writer to this file, might be None if not opened yet
     writer: Option<las::Writer<BufWriter<File>>>,
-}
-impl Drop for OutTile {
-    fn drop(&mut self) {
-        println!("Closing tile {},{}", self.tile_index.0, self.tile_index.1,);
-    }
 }
 
 impl OutTile {
