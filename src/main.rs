@@ -104,6 +104,9 @@ fn main() -> Result<()> {
 
     let options = las::ReaderOptions::default().with_laz_parallelism(las::LazParallelism::Yes);
 
+    // TODO: create the mapping from input to output beforehand. Automatically close files that
+    // have been written completely to avoid having too many files open at once.
+    // Assume the input files have points "everywhere" in their bounds.
     let mut output_files: HashMap<(i64, i64), las::Writer<BufWriter<File>>> =
         std::collections::HashMap::new();
     for (path, header) in &headers {
@@ -122,13 +125,36 @@ fn main() -> Result<()> {
             }
 
             // map each point to their "new" tile
-            for p in &points {
-                let nx = (p.x / tile_size) as i64;
-                let ny = (p.y / tile_size) as i64;
+
+            // To reduce the number of hashmap lookups: iterate the points until
+            // they no longer fit into the current tile, then do a single lookup and write all
+            // points at once.
+
+            let mut i = 0;
+            while i < n as usize {
+                let mut tile_index = None;
+                let mut count = 0;
+                for p in &points[i..] {
+                    let nx = (p.x / tile_size) as i64;
+                    let ny = (p.y / tile_size) as i64;
+
+                    if let Some((tx, ty)) = tile_index {
+                        if (nx, ny) != (tx, ty) {
+                            // this point is in a different tile, stop here
+                            break;
+                        }
+                    } else {
+                        tile_index = Some((nx, ny));
+                    }
+                    count += 1;
+                }
+
+                let (nx, ny) = tile_index.context("at least one point to process")?;
+                println!("Count: {count}");
 
                 let writer = output_files.entry((nx, ny)).or_insert_with(|| {
                     // create the output file
-                    let tile_path = output_folder.join(format!("tile_{}_{}.las", nx, ny));
+                    let tile_path = output_folder.join(format!("tile_{}_{}.laz", nx, ny));
                     std::fs::create_dir_all(output_folder).expect("Could not create output folder");
                     println!("Creating output file: {}", tile_path.display());
                     let mut new_header = header.clone();
@@ -138,9 +164,12 @@ fn main() -> Result<()> {
                     writer
                 });
 
-                writer
-                    .write_point(p.clone())
-                    .context("Could not write point")?;
+                for p in &points[i..(i + count)] {
+                    writer
+                        .write_point(p.clone())
+                        .context("Could not write point")?;
+                }
+                i += count;
             }
         }
     }
